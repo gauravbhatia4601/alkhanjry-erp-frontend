@@ -1,0 +1,8 @@
+# Root-level ignores
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
+*.swp
+*.swo
