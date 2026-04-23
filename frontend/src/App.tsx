@@ -46,10 +46,14 @@ import QuotationEditPage from "./pages/quotations/QuotationEditPage";
 import QuotationPrintPage from "./pages/quotations/QuotationPrintPage";
 import PermissionGuard from "./components/permission/PermissionGuard";
 
+// TEMP: bypass auth to open dashboard directly for design review
+const BYPASS_AUTH = true;
+
 /* ───── Auth gate ───── */
 interface ProtectedRouteProps { children: ReactNode; }
 const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
   const { isAuthenticated, isLoading } = useAuth();
+  if (BYPASS_AUTH) return <>{children}</>;
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
