@@ -10,7 +10,7 @@ import PasswordInput from "../../components/form/input/PasswordInput";
 import Label from "../../components/form/Label";
 
 const loginSchema = z.object({
-  username: z.string().min(1, "Username is required"),
+  email: z.string().min(1, "Email is required").email("Please enter a valid email"),
   password: z.string().min(1, "Password is required"),
 });
 
@@ -18,7 +18,7 @@ type LoginFormData = z.infer<typeof loginSchema>;
 
 export default function LoginPage() {
   const [loginError, setLoginError] = useState("");
-  const { login, isAuthenticated } = useAuth();
+  const { login, isAuthenticated, user } = useAuth();
 
   const {
     register,
@@ -28,15 +28,18 @@ export default function LoginPage() {
     resolver: zodResolver(loginSchema),
   });
 
-  // Redirect if already authenticated
-  if (isAuthenticated) {
-    return <Navigate to="/" replace />;
+  // Already authenticated — redirect to role-appropriate dashboard
+  if (isAuthenticated && user) {
+    const prefix = user.role === "admin" ? "/admin" : "/salesman";
+    return <Navigate to={prefix} replace />;
   }
 
   const onSubmit = async (data: LoginFormData) => {
     setLoginError("");
-    const result = await login(data.username, data.password);
-    if (!result.success) {
+    const result = await login(data.email, data.password);
+    if (result.success) {
+      // Navigate handled by re-render (isAuthenticated becomes true)
+    } else {
       setLoginError(result.error || "Login failed");
     }
   };
@@ -70,15 +73,16 @@ export default function LoginPage() {
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
             <div>
               <Label>
-                Username <span className="text-error-500">*</span>
+                Email <span className="text-error-500">*</span>
               </Label>
               <Input
-                {...register("username")}
-                placeholder="Enter your username"
-                error={!!errors.username}
+                {...register("email")}
+                type="email"
+                placeholder="admin@alkhanjry.com"
+                error={!!errors.email}
               />
-              {errors.username && (
-                <p className="mt-1.5 text-xs text-error-500">{errors.username.message}</p>
+              {errors.email && (
+                <p className="mt-1.5 text-xs text-error-500">{errors.email.message}</p>
               )}
             </div>
 

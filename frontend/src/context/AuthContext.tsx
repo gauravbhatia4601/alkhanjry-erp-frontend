@@ -1,114 +1,231 @@
-import { useState, useEffect, createContext, useContext } from "react";
+import { useState, useEffect, createContext, useContext, useCallback } from "react";
 
-interface User {
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+export interface User {
   id: number;
   name: string;
-  username: string;
   email: string;
+  phone?: string;
   role: "admin" | "salesman";
   is_active: boolean;
-  permissions?: string[]; // <— sent by backend when RBAC is live
+  permissions: string[];
+  last_login_at?: string;
+}
+
+interface LoginResponse {
+  success: boolean;
+  data: {
+    user: User;
+    token: string;
+  };
+  error: null | { code: string; message: string; details?: Record<string, string[]> };
+  meta: { message?: string; timestamp: string };
+}
+
+interface MeResponse {
+  success: boolean;
+  data: {
+    user: User;
+    permissions: string[];
+    roles: string[];
+  };
+  error: null | { code: string; message: string };
+  meta: { timestamp: string };
+}
+
+interface ApiError {
+  success: false;
+  data: null;
+  error: { code: string; message: string; details?: unknown };
+  meta: { timestamp: string };
 }
 
 interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   isAuthenticated: boolean;
-  login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
+  refreshToken: () => Promise<boolean>;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
-
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 const API_BASE_URL = "/api";
+const TOKEN_KEY = "alkhanjry_auth_token";
 
-// Fetch wrapper with credentials
-async function fetchWithCredentials(url: string, options: RequestInit = {}) {
-  const response = await fetch(`${API_BASE_URL}${url}`, {
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+function getStoredToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+function setStoredToken(token: string): void {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+function clearStoredToken(): void {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+// ---------------------------------------------------------------------------
+// Fetch wrapper with auth and standardized error handling
+// ---------------------------------------------------------------------------
+async function apiFetch<T>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const token = getStoredToken();
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    ...((options.headers as Record<string, string>) || {}),
+  };
+
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      ...options.headers,
-    },
+    headers,
     credentials: "include",
   });
 
-  if (!response.ok) {
-    if (response.status === 401 || response.status === 419) {
-      // Session expired or unauthenticated
-      throw new Error("Unauthorized");
-    }
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.message || `HTTP ${response.status}`);
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    body = {};
   }
 
-  return response.json();
+  // Standardized error envelope from backend
+  if (!response.ok) {
+    const apiError = body as ApiError;
+    const message =
+      apiError?.error?.message || `HTTP ${response.status}`;
+    const code = apiError?.error?.code || `ERR_${response.status}`;
+    const details = apiError?.error?.details;
+    const error = new Error(message);
+    (error as unknown as Record<string, unknown>).code = code;
+    (error as unknown as Record<string, unknown>).details = details;
+    throw error;
+  }
+
+  return body as T;
 }
 
-// TEMP: Set to true to bypass auth and browse all pages without backend
-const BYPASS_AUTH = true;
+// ---------------------------------------------------------------------------
+// Context
+// ---------------------------------------------------------------------------
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
-  const [user, setUser] = useState<User | null>(
-    BYPASS_AUTH
-      ? {
-          id: 1,
-          name: "Admin User",
-          username: "admin",
-          email: "admin@alkhanjry.com",
-          role: "admin",
-          is_active: true,
-        }
-      : null
-  );
-  const [isLoading, setIsLoading] = useState(!BYPASS_AUTH);
+  const [user, setUser] = useState<User | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Check auth status on mount
+  // Load user on mount if token exists
   useEffect(() => {
-    if (BYPASS_AUTH) return;
-    checkAuthStatus();
+    const token = getStoredToken();
+    if (!token) {
+      setIsLoading(false);
+      return;
+    }
+    fetchCurrentUser().finally(() => setIsLoading(false));
   }, []);
 
-  const checkAuthStatus = async () => {
+  const fetchCurrentUser = async (): Promise<boolean> => {
     try {
-      setIsLoading(true);
-      const data = await fetchWithCredentials("/auth/me");
-      setUser(data.user);
+      const response = await apiFetch<MeResponse>("/v1/auth/me");
+      if (response.success && response.data.user) {
+        const enriched: User = {
+          ...response.data.user,
+          permissions: response.data.permissions || [],
+        };
+        setUser(enriched);
+        return true;
+      }
+      return false;
     } catch {
+      clearStoredToken();
       setUser(null);
-    } finally {
-      setIsLoading(false);
+      return false;
     }
   };
 
-  const login = async (username: string, password: string) => {
+  const login = async (
+    email: string,
+    password: string
+  ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const data = await fetchWithCredentials("/auth/login", {
+      const response = await apiFetch<LoginResponse>("/v1/auth/login", {
         method: "POST",
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ email, password }),
       });
-      setUser(data.user);
+
+      if (!response.success || !response.data?.token) {
+        const apiErr = response.error;
+        return {
+          success: false,
+          error: apiErr?.message || "Invalid credentials.",
+        };
+      }
+
+      setStoredToken(response.data.token);
+
+      // Enrich user with permissions from login response
+      const enriched: User = {
+        ...response.data.user,
+        permissions: [],
+      };
+      setUser(enriched);
+
+      // Fetch /me immediately to get full permissions
+      await fetchCurrentUser();
+
       return { success: true };
     } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "Login failed",
-      };
+      const message =
+        error instanceof Error ? error.message : "Login failed";
+      return { success: false, error: message };
     }
   };
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     try {
-      await fetchWithCredentials("/auth/logout", {
-        method: "POST",
-      });
+      await apiFetch("/v1/auth/logout", { method: "POST" });
+    } catch {
+      // Ignore — always clear client-side state
     } finally {
+      clearStoredToken();
       setUser(null);
     }
-  };
+  }, []);
+
+  const refreshToken = useCallback(async (): Promise<boolean> => {
+    try {
+      const response = await apiFetch<{
+        success: boolean;
+        data: { token: string };
+      }>("/v1/auth/refresh", { method: "POST" });
+
+      if (response.success && response.data?.token) {
+        setStoredToken(response.data.token);
+        return true;
+      }
+      return false;
+    } catch {
+      clearStoredToken();
+      setUser(null);
+      return false;
+    }
+  }, []);
 
   return (
     <AuthContext.Provider
@@ -118,6 +235,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         isAuthenticated: !!user,
         login,
         logout,
+        refreshToken,
       }}
     >
       {children}
@@ -125,13 +243,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 };
 
-export const useAuth = () => {
+export const useAuth = (): AuthContextType => {
   const context = useContext(AuthContext);
-  if (context === undefined) {
+  if (!context) {
     throw new Error("useAuth must be used within an AuthProvider");
   }
   return context;
 };
 
-// Export fetch helper for API calls
-export { fetchWithCredentials };
+// Re-export fetch helper for non-auth API calls
+export { apiFetch, getStoredToken };
