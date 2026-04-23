@@ -5,26 +5,19 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Auth\LoginRequest;
+use App\Http\Resources\UserResource;
 use App\Models\User;
-use Illuminate\Auth\AuthenticationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
 
-/**
- * Authentication controller using Laravel Sanctum.
- *
- * Provides login, logout, token refresh, and current user endpoints.
- */
 class AuthController extends Controller
 {
-    public function login(Request $request): JsonResponse
+    public function login(LoginRequest $request): JsonResponse
     {
-        $validated = $request->validate([
-            'email' => ['required', 'email'],
-            'password' => ['required', 'string'],
-        ]);
+        $validated = $request->validated();
 
         $user = User::query()
             ->where('email', $validated['email'])
@@ -38,28 +31,18 @@ class AuthController extends Controller
         }
 
         $user->update(['last_login_at' => now()]);
-        $token = $user->createToken(
-            name: 'api-token',
-            expiresAt: now()->addHours(24)
-        )->plainTextToken;
+
+        $token = $user->createToken('api-token', expiresAt: now()->addHours(24))->plainTextToken;
 
         return $this->respondSuccess([
-            'user' => [
-                'id' => $user->id,
-                'name' => $user->name,
-                'email' => $user->email,
-                'phone' => $user->phone,
-                'role' => $user->role,
-                'is_active' => $user->is_active,
-                'permissions' => $user->getAllPermissions()->pluck('name'),
-            ],
+            'user' => new UserResource($user),
             'token' => $token,
         ], 'Login successful.');
     }
 
     public function logout(Request $request): JsonResponse
     {
-        $request->user()->currentAccessToken()->delete();
+        $request->user()?->currentAccessToken()?->delete();
 
         return $this->respondSuccess(null, 'Logged out successfully.');
     }
@@ -67,15 +50,17 @@ class AuthController extends Controller
     public function refresh(Request $request): JsonResponse
     {
         $user = $request->user();
-        $user->currentAccessToken()->delete();
 
-        $token = $user->createToken(
-            name: 'api-token',
-            expiresAt: now()->addHours(24)
-        )->plainTextToken;
+        if (! $user) {
+            return $this->respondUnauthorized('Not authenticated.');
+        }
+
+        $user->currentAccessToken()?->delete();
+
+        $newToken = $user->createToken('api-token', expiresAt: now()->addHours(24))->plainTextToken;
 
         return $this->respondSuccess([
-            'token' => $token,
+            'token' => $newToken,
         ], 'Token refreshed successfully.');
     }
 
@@ -83,17 +68,14 @@ class AuthController extends Controller
     {
         $user = $request->user();
 
+        if (! $user) {
+            return $this->respondUnauthorized('Not authenticated.');
+        }
+
         return $this->respondSuccess([
-            'id' => $user->id,
-            'name' => $user->name,
-            'email' => $user->email,
-            'phone' => $user->phone,
-            'role' => $user->role,
-            'is_active' => $user->is_active,
-            'last_login_at' => $user->last_login_at?->toIso8601String(),
+            'user' => new UserResource($user),
             'permissions' => $user->getAllPermissions()->pluck('name'),
             'roles' => $user->getRoleNames(),
-            'created_at' => $user->created_at?->toIso8601String(),
         ]);
     }
 }
