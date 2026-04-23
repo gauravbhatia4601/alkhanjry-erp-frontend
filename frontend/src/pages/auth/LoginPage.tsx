@@ -28,10 +28,9 @@ export default function LoginPage() {
     resolver: zodResolver(loginSchema),
   });
 
-  // Already authenticated — redirect to role-appropriate dashboard
+  // Already authenticated — redirect to home (router handles role-based routing)
   if (isAuthenticated && user) {
-    const prefix = user.role === "admin" ? "/admin" : "/salesman";
-    return <Navigate to={prefix} replace />;
+    return <Navigate to="/" replace />;
   }
 
   const onSubmit = async (data: LoginFormData) => {
